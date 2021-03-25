@@ -10,7 +10,7 @@ using System.Linq;
 namespace Team1.Function
 {
     public static class HttpTriggerTopTen
-    {
+    {     
         
         // class for results
         public class word_list
