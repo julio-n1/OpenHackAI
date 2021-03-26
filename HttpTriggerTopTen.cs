@@ -1,45 +1,151 @@
-using System.Collections.Generic;
 using System.Net;
+using System.Collections.Generic;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
-using Microsoft.Extensions.Logging;
+
 using Newtonsoft.Json;
 using System.Text.RegularExpressions;
 using System.Linq;
+using System.IO;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 
 namespace Team1.Function
 {
     public static class HttpTriggerTopTen
     {     
-        
-        // class for results
-        public class word_list
+        //define classes for responses
+        private class WebApiResponseError
         {
-            public List<string> values {get; set;}
+            public string message { get; set; }
+        }
+
+        private class WebApiResponseWarning
+        {
+            public string message { get; set; }
+        }
+
+        private class WebApiResponseRecord
+        {
+            public string recordId { get; set; }
+            public Dictionary<string, object> data { get; set; }
+            public List<WebApiResponseError> errors { get; set; }
+            public List<WebApiResponseWarning> warnings { get; set; }
+        }
+
+
+        // class for results
+        class WebApiEnricherResponse
+        {
+            public List<WebApiResponseRecord> values {get; set;}
         }
 
         [Function("HttpTriggerTopTen")]
         public static HttpResponseData Run([HttpTrigger(AuthorizationLevel.Anonymous, "post")] HttpRequestData req,
             FunctionContext executionContext)
         {
-            var log = executionContext.GetLogger("HttpTriggerTopTen");
-            log.LogInformation("Entity Search function: C# HTTP trigger function processed a request." );
-            
-            if(req.Body is null) return req.CreateResponse(HttpStatusCode.InternalServerError);
+            string recordId = null;
+            string originalText = null;
 
-            string requestBody = new System.IO.StreamReader(req.Body).ReadToEnd();
-            log.LogInformation("==>>>" + requestBody.Substring(1, 500));
+            var log = executionContext.GetLogger("HttpTriggerTopTen");
+            
+            string requestBody = new StreamReader(req.Body).ReadToEnd();
+            dynamic data = JsonConvert.DeserializeObject(requestBody);
+
+            log.LogInformation("==>>>>REQUEST BODY [" +  requestBody + "]");
+
+            var responseError = req.CreateResponse(HttpStatusCode.InternalServerError);
+            responseError.Headers.Add("Content-Type", "application/json; charset=utf-8");
+
+            // Validation
+            if (data?.values == null)
+            {
+                responseError.WriteString(JsonConvert.SerializeObject((
+                    new WebApiResponseRecord () 
+                    { 
+                        errors = new List<WebApiResponseError>() 
+                        { 
+                            new WebApiResponseError() 
+                            { 
+                                message = "Could not find values array" 
+                            }  
+                        } 
+                    } 
+                )));
+                return responseError;
+            }
+            if (data?.values.HasValues == false || data?.values.First.HasValues == false)
+            {                
+               responseError.WriteString(JsonConvert.SerializeObject((
+                    new WebApiResponseRecord () 
+                    { 
+                        errors = new List<WebApiResponseError>() 
+                        { 
+                            new WebApiResponseError() 
+                            { 
+                                message = "Could not find valid records in values array" 
+                            }  
+                        } 
+                    } 
+                )));
+                return responseError;
+            }
+
+            WebApiEnricherResponse responseApi = new WebApiEnricherResponse();
+            responseApi.values = new List<WebApiResponseRecord>();
+            foreach (var record in data?.values)
+            {
+                recordId = record.recordId?.Value as string;
+                originalText = record.data?.text?.Value as string;
+
+                if (recordId == null)
+                {
+                    responseError.WriteString(JsonConvert.SerializeObject((
+                    new WebApiResponseRecord () 
+                    { 
+                        errors = new List<WebApiResponseError>() 
+                        { 
+                            new WebApiResponseError() 
+                            { 
+                                message = "recordId cannot be null" 
+                            }  
+                        } 
+                    })));
+                    return responseError;
+                }
+
+                // log input
+                log.LogInformation("==>>>>REQUEST text [" +  originalText + "]");
+
+                // Put together response.
+                WebApiResponseRecord responseRecord = new WebApiResponseRecord();
+                responseRecord.data = new Dictionary<string, object>();
+                responseRecord.data.Add ( "words", get_top_ten_words(originalText) ); //new Dictionary<string, object>();
+                responseRecord.data.Add ( "topten", string.Join(",", get_top_ten_words(originalText) ) );
+                responseRecord.recordId = recordId;
+                responseRecord.warnings = new List<WebApiResponseWarning>() 
+                        { 
+                            new WebApiResponseWarning() 
+                            { 
+                                message = string.Join(",", get_top_ten_words(originalText))
+                            }  
+                        };
+                //responseRecord.data.Add("text", get_top_ten_words(originalText));
+
+                responseApi.values.Add(responseRecord);
+            }
 
             var response = req.CreateResponse(HttpStatusCode.OK);
             response.Headers.Add("Content-Type", "application/json; charset=utf-8");
 
-            response.WriteString(JsonConvert.SerializeObject(get_top_ten_words(requestBody)));
-
-            return response;            
+            log.LogInformation("==>>>>RESPONSE " +  JsonConvert.SerializeObject(responseApi));
+            response.WriteString(JsonConvert.SerializeObject(responseApi));
+            //response.WriteString(JsonConvert.SerializeObject(new { values = new { data = new { words = get_top_ten_words(originalText) } } }));
+            return response;           
             
         }
 
-        public static word_list get_top_ten_words(string text) 
+        public static List<string> get_top_ten_words(string text) 
         {
 
             // convert to lowercase
@@ -88,12 +194,8 @@ namespace Team1.Function
                 resList.Add(klist[i].Key);
             }
 
-            // Construct object for results
-            word_list json_result = new word_list();
-            json_result.values = resList;
-
             // return the results object
-            return json_result;
+            return resList;
         }
     }
 }
